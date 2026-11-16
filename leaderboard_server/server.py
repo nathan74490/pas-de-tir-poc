@@ -126,6 +126,20 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, data) -> None:
         self._send(200, json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
+    def _read_body(self) -> bytes:
+        # Le HttpClient Dart de l'app envoie le corps en « chunked », sans Content-Length.
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            data = b""
+            while True:
+                size = int(self.rfile.readline().split(b";")[0].strip(), 16)
+                if size == 0:
+                    while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                        pass  # en-têtes de fin éventuels
+                    return data
+                data += self.rfile.read(size)
+                self.rfile.readline()  # CRLF après chaque morceau
+        return self.rfile.read(int(self.headers.get("Content-Length") or 0))
+
     def _dispatch(self) -> None:
         path = urlsplit(self.path).path
         try:
@@ -140,9 +154,8 @@ class Handler(BaseHTTPRequestHandler):
                     data = {"ranking": _ranking(), "games": len(_games)}
                 self._json(data)
             elif self.command == "POST" and path == "/api/scores":
-                length = int(self.headers.get("Content-Length") or 0)
                 try:
-                    body = json.loads(self.rfile.read(length).decode("utf-8"))
+                    body = json.loads(self._read_body().decode("utf-8"))
                 except ValueError as e:
                     raise BadRequest(f"JSON invalide : {e}")
                 if not isinstance(body, dict):
