@@ -27,4 +27,8 @@ Port 8080 par défaut (passer un autre port en argument). Ouvrir
 `http://localhost:8080` pour l'écran de classement, puis saisir l'adresse du
 serveur dans le paramétrage démo des téléphones.
 
-API : `GET /api/health`, `GET /api/scores`, `POST /api/scores`, `POST /api/reset`.
+API : `GET /api/health`, `GET /api/scores`, `POST /api/scores`, `POST /api/reset`,
+`POST /api/delete` (`{"pseudo": "..."}` : supprime toutes les parties de ce joueur).
+
+Sur l’écran de classement : bouton « Réinitialiser le classement » en bas à droite,
+et une croix au survol de chaque joueur pour le retirer du classement.

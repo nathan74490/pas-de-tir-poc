@@ -108,6 +108,21 @@ def _reset() -> None:
     print("Classement remis à zéro.", flush=True)
 
 
+def _delete_player(body: dict) -> int:
+    """Supprime toutes les parties d'un pseudo (sans tenir compte de la casse)."""
+    key = _str_field(body, "pseudo", "").strip().lower()
+    if not key:
+        raise BadRequest("pseudo manquant")
+    with _lock:
+        before = len(_games)
+        _games[:] = [g for g in _games if g["pseudo"].lower() != key]
+        removed = before - len(_games)
+        if removed:
+            _save()
+    print(f"- {key} : {removed} partie(s) supprimée(s)", flush=True)
+    return removed
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PasDeTir/1.0"
 
@@ -140,6 +155,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.rfile.readline()  # CRLF après chaque morceau
         return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
+    def _json_body(self) -> dict:
+        try:
+            body = json.loads(self._read_body().decode("utf-8"))
+        except ValueError as e:
+            raise BadRequest(f"JSON invalide : {e}")
+        if not isinstance(body, dict):
+            raise BadRequest("objet JSON attendu")
+        return body
+
     def _dispatch(self) -> None:
         path = urlsplit(self.path).path
         try:
@@ -154,17 +178,13 @@ class Handler(BaseHTTPRequestHandler):
                     data = {"ranking": _ranking(), "games": len(_games)}
                 self._json(data)
             elif self.command == "POST" and path == "/api/scores":
-                try:
-                    body = json.loads(self._read_body().decode("utf-8"))
-                except ValueError as e:
-                    raise BadRequest(f"JSON invalide : {e}")
-                if not isinstance(body, dict):
-                    raise BadRequest("objet JSON attendu")
-                _add_game(body)
+                _add_game(self._json_body())
                 self._json({"ok": True})
             elif self.command == "POST" and path == "/api/reset":
                 _reset()
                 self._json({"ok": True})
+            elif self.command == "POST" and path == "/api/delete":
+                self._json({"ok": True, "removed": _delete_player(self._json_body())})
             else:
                 self._send(404)
         except Exception as e:  # même comportement que server.dart : 400 + message
@@ -268,9 +288,20 @@ PAGE = r'''<!doctype html>
   .empty { grid-column: span 2; text-align: center; color: var(--muted); font-size: 3vh; padding-top: 12vh; }
   .offline { position: fixed; bottom: 2vh; left: 50%; transform: translateX(-50%); background: #262A2C; color: #fff;
              padding: 1vh 2vw; border-radius: 1vh; font-size: 2vh; display: none; }
-  #reset { position: fixed; right: 1.5vw; bottom: 1.5vh; opacity: 0; border: 0; background: #fff; border-radius: 1vh;
-           padding: 1vh 1.5vw; font-size: 1.8vh; cursor: pointer; }
-  #reset:hover { opacity: 1; }
+  #reset { position: fixed; right: 1.5vw; bottom: 1.5vh; border: .2vh solid var(--line); background: #fff; color: var(--muted);
+           border-radius: 1vh; padding: 1vh 1.5vw; font-size: 1.8vh; font-weight: 600; cursor: pointer;
+           transition: background .2s, color .2s, border-color .2s; }
+  #reset:hover { background: #D93025; border-color: #D93025; color: #fff; }
+
+  /* Suppression d'un joueur : croix visible au survol de sa ligne. */
+  .row { position: relative; }
+  .del { position: absolute; top: 50%; right: 1vw; transform: translateY(-50%) scale(.8);
+         width: 4.4vh; height: 4.4vh; border-radius: 50%; border: 0; background: #D93025; color: #fff;
+         font-size: 2.6vh; line-height: 1; cursor: pointer; opacity: 0; pointer-events: none;
+         transition: opacity .15s, transform .15s; box-shadow: 0 .3vh 1vh rgba(0,0,0,.2); }
+  .row:hover .del { opacity: 1; pointer-events: auto; transform: translateY(-50%) scale(1); }
+  .row:hover .drops { visibility: hidden; }
+  .del:hover { background: #A8231B; }
 </style>
 </head>
 <body>
@@ -284,7 +315,7 @@ PAGE = r'''<!doctype html>
   </header>
   <main class="board" id="board"></main>
   <div class="offline" id="offline">Connexion au serveur perdue…</div>
-  <button id="reset" title="Remettre le classement à zéro">Réinitialiser</button>
+  <button id="reset" title="Remettre tout le classement à zéro">Réinitialiser le classement</button>
 <script>
   const MAX_ROWS = 13;
   const MODES = { ar: 'AR', gyro: 'Gyro', classic: 'Classique' };
@@ -314,6 +345,7 @@ PAGE = r'''<!doctype html>
             <div class="name">${esc(g.pseudo)}</div>
             <div class="meta">${g.hits}/${g.targets} cibles · ${secs(g.duration_ms)} · ${MODES[g.mode] || g.mode}</div>
             <div class="drops">${g.drops}<span class="drop"></span></div>
+            <button class="del" data-pseudo="${esc(g.pseudo)}" title="Supprimer ${esc(g.pseudo)} du classement">✕</button>
           </div>`;
         }).join('');
         if (first) ranking.forEach(g => seen.add(g.pseudo.toLowerCase() + '|' + g.last_played));
@@ -325,10 +357,24 @@ PAGE = r'''<!doctype html>
   }
 
   document.getElementById('reset').onclick = async () => {
-    if (!confirm('Remettre le classement à zéro ? (une sauvegarde est gardée sur l\'ordi)')) return;
+    if (!confirm('Remettre tout le classement à zéro ? (une sauvegarde est gardée sur le serveur)')) return;
     await fetch('/api/reset', { method: 'POST' });
     refresh();
   };
+
+  // Croix au survol d'une ligne : supprime toutes les parties de ce joueur.
+  document.getElementById('board').addEventListener('click', async e => {
+    const btn = e.target.closest('.del');
+    if (!btn) return;
+    const pseudo = btn.dataset.pseudo;
+    if (!confirm(`Supprimer « ${pseudo} » du classement ? (toutes ses parties)`)) return;
+    await fetch('/api/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pseudo }),
+    });
+    refresh();
+  });
 
   refresh();
   setInterval(refresh, 2000);
