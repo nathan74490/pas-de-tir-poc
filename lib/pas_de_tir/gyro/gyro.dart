@@ -40,6 +40,21 @@ List<double> levelReference(List<double> current) {
   return [fy, 0, -fx, -fx, 0, -fy, 0, 1, 0];
 }
 
+/// Orientation de référence « droit devant, à l'inclinaison actuelle » : cap
+/// et tangage du téléphone [current], sans le roulis. La plaque se place là où
+/// le joueur vise naturellement (téléphone souvent un peu incliné vers le bas),
+/// sans l'obliger à le tenir parfaitement vertical. Le tangage est borné à
+/// [maxPitch] (rad) pour qu'un téléphone tenu à plat ne vise pas le sol.
+List<double> aimReference(List<double> current, {double maxPitch = 0.7}) {
+  final level = levelReference(current);
+  final p = aimAngles(level, current).dy.clamp(-maxPitch, maxPitch);
+  // Avant horizontal (fx, fy, 0), extrait de la colonne « arrière » du repère à niveau.
+  final fx = -level[2], fy = -level[5];
+  final c = math.cos(p), s = math.sin(p);
+  // Colonnes : droite (inchangée), haut et arrière tournés de p autour de la droite.
+  return [fy, -fx * s, -fx * c, -fx, -fy * s, -fy * c, 0, c, -s];
+}
+
 /// Angles de visée (lacet, tangage) en radians de l'axe de la caméra arrière
 /// (−Z appareil) dans l'orientation [current], par rapport à l'orientation
 /// [reference] : `dx` > 0 = tourné vers la droite, `dy` > 0 = levé vers le haut.

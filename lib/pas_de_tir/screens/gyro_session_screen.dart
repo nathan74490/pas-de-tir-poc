@@ -89,7 +89,7 @@ class _GyroSessionScreenState extends State<GyroSessionScreen>
     _rotations = Gyro.rotations().listen(
       (m) {
         _rotation = m;
-        _reference ??= levelReference(m);
+        _reference ??= aimReference(m);
       },
       onError: (Object _) => _fallback(),
     );
@@ -153,11 +153,11 @@ class _GyroSessionScreenState extends State<GyroSessionScreen>
     Navigator.pop(context, const ClassicFallbackSignal());
   }
 
-  /// La plaque se replace droit devant, dans la direction où pointe le téléphone
-  /// (à l'horizon, quelle que soit son inclinaison).
+  /// La plaque se replace droit devant, dans la direction où pointe le téléphone,
+  /// à son inclinaison actuelle : le joueur vise sans avoir à lever le téléphone.
   void _recenter() {
     final r = _rotation;
-    if (r != null) _reference = levelReference(r);
+    if (r != null) _reference = aimReference(r);
   }
 
   void _calibrate() {
@@ -240,8 +240,9 @@ class _GyroSessionScreenState extends State<GyroSessionScreen>
     // Monde : origine = point visé au calibrage, où est centrée la rangée de cibles.
     final geom = PlateGeometry(size.width * _plateWidthFraction, targetCount: c.targetCount);
     final plateTopLeft = Offset(-geom.width / 2, -geom.targetCenter(0).dy);
-    // Cibles juste au-dessus de l'horizon de la photo (pied des banderoles), comme sur la maquette.
-    final horizon = plateTopLeft.dy + geom.height * 1.2;
+    // Centre des cibles sur le point de fuite de la photo : elles se tiennent au
+    // fond de la piste, au pied des banderoles.
+    final horizon = plateTopLeft.dy + geom.targetCenter(0).dy;
     // Viseur au milieu de l'écran, comme sur la maquette (cibles à 50 % - 29 px).
     final anchor = Offset(size.width / 2, size.height / 2 - 29);
 

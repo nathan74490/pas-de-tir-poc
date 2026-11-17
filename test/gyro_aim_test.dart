@@ -68,6 +68,25 @@ void main() {
       expect(a.dy, closeTo(0, 1e-9));
     });
 
+    test('calibrage à l\'inclinaison du joueur : visée au centre, cap conservé', () {
+      for (final tilt in [0.0, -0.3, -0.5, 0.4]) {
+        final phone = mul(rotZ(0.9), mul(upright, mul(rotX(tilt), rotZ(0.2))));
+        final reference = aimReference(phone);
+        final a = aimAngles(reference, phone);
+        expect(a.dx, closeTo(0, 1e-9));
+        expect(a.dy, closeTo(0, 1e-9));
+        // Lever le téléphone de 0,1 rad fait monter la visée d'autant.
+        final raised = mul(rotZ(0.9), mul(upright, rotX(tilt + 0.1)));
+        expect(aimAngles(reference, raised).dy, closeTo(0.1, 1e-9));
+        expect(aimAngles(reference, raised).dx, closeTo(0, 1e-9));
+      }
+    });
+
+    test('calibrage à l\'inclinaison : tangage borné', () {
+      final phone = mul(upright, rotX(-1.2));
+      expect(aimAngles(aimReference(phone), phone).dy, closeTo(-0.5, 1e-9));
+    });
+
     test('relatif à une référence quelconque (téléphone incliné et tourné)', () {
       final reference = mul(rotY(1.1), rotX(-0.4));
       final current = mul(reference, rotY(-0.1));
