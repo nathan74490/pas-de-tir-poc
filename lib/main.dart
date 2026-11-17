@@ -109,7 +109,12 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
   Future<void> _detectModes() async {
     final (ar, gyro) = await (isArSupported(), isGyroSupported()).wait;
     if (!mounted) return;
-    final modes = {if (ar) PasDeTirMode.ar, if (gyro) PasDeTirMode.gyro, PasDeTirMode.classic};
+    final modes = {
+      if (ar) PasDeTirMode.ar,
+      if (gyro) PasDeTirMode.gyro,
+      if (gyro) PasDeTirMode.gyroCamera,
+      PasDeTirMode.classic,
+    };
     setState(() {
       _availableModes = modes;
       if (_demoMode == null || !modes.contains(_demoMode)) _demoMode = modes.first;
@@ -213,6 +218,18 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
                     .showSnackBar(const SnackBar(content: Text('Gyroscope indisponible : repli en Classique')));
               }
             }),
+            _entry('G2', 'Gyroscope + caméra · Calibrage et tir', () async {
+              if (!await requestCameraPermission() || !context.mounted) return;
+              final r = await Navigator.push<Object?>(
+                context,
+                MaterialPageRoute(builder: (_) => const GyroSessionScreen(useCamera: true)),
+              );
+              if (r is ClassicFallbackSignal && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Gyroscope ou caméra indisponible : repli en Classique')),
+                );
+              }
+            }),
             _entry('15', 'Retour en course', () => _push(RaceMapScreen(race: _raceWithDemo(), startArrived: true))),
             _entry('16', "Résultats de l'épreuve", () => _push(RaceResultsScreen(race: _raceWithDemo()))),
           ],
@@ -246,8 +263,17 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
             SegmentedButton<PasDeTirMode>(
               segments: [
                 for (final m in PasDeTirMode.values)
-                  if (modes.contains(m)) ButtonSegment(value: m, label: Text(m.shortLabel)),
+                  if (modes.contains(m))
+                    ButtonSegment(
+                      value: m,
+                      // Une seule ligne, réduite si 4 modes ne tiennent pas en largeur.
+                      label: FittedBox(fit: BoxFit.scaleDown, child: Text(m.shortLabel, maxLines: 1, softWrap: false)),
+                    ),
               ],
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 4)),
+              ),
               selected: {?_demoMode},
               showSelectedIcon: false,
               onSelectionChanged: (s) => setState(() => _demoMode = s.first),

@@ -318,7 +318,7 @@ PAGE = r'''<!doctype html>
   <button id="reset" title="Remettre tout le classement à zéro">Réinitialiser le classement</button>
 <script>
   const MAX_ROWS = 13;
-  const MODES = { ar: 'AR', gyro: 'Gyro', classic: 'Classique' };
+  const MODES = { ar: 'AR', gyro: 'Gyro', gyro_camera: 'Gyro caméra', classic: 'Classique' };
   const seen = new Set();
   let first = true;
 

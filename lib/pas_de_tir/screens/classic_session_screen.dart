@@ -1,18 +1,13 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import '../../theme/alp_tokens.dart';
-import '../../widgets/alp_common.dart';
 import '../pas_de_tir_config.dart';
 import '../pas_de_tir_result.dart';
 import '../shooting_session.dart';
-import '../widgets/scenes.dart';
 import '../widgets/shooting_widgets.dart';
 import 'pas_de_tir_modals.dart';
 
-/// Variante Classique : 03 « Reprends ton souffle » puis 04–06 tir, puis 07 résultat.
+/// Variante Classique : 03 « Contrôle ta respiration » puis 04–06 tir, puis 07 résultat.
 /// Se ferme avec le [PasDeTirResult] de la série.
 class ClassicSessionScreen extends StatefulWidget {
   const ClassicSessionScreen({super.key, this.config = PasDeTirConfig.standard, this.skipBreathing = false});
@@ -27,8 +22,8 @@ class ClassicSessionScreen extends StatefulWidget {
 class _ClassicSessionScreenState extends State<ClassicSessionScreen> with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
   late final ShootingSession _session = ShootingSession(mode: PasDeTirMode.classic, config: widget.config);
-  late bool _breathing = !widget.skipBreathing;
-  Duration _breathStart = Duration.zero;
+  late bool _briefing = !widget.skipBreathing;
+  Duration _shootStart = Duration.zero;
   Duration _now = Duration.zero;
   bool _resultShown = false;
 
@@ -40,16 +35,18 @@ class _ClassicSessionScreenState extends State<ClassicSessionScreen> with Single
 
   void _onTick(Duration t) {
     _now = t;
-    if (_breathing) {
-      setState(() {});
-      return;
-    }
-    setState(() => _session.tick(t - _breathStart));
+    if (_briefing) return;
+    setState(() => _session.tick(t - _shootStart));
     if (_session.readyForResult && !_resultShown) {
       _resultShown = true;
       _showResult();
     }
   }
+
+  void _startShooting() => setState(() {
+    _briefing = false;
+    _shootStart = _now;
+  });
 
   Future<void> _showResult() async {
     final result = _session.buildResult();
@@ -85,112 +82,84 @@ class _ClassicSessionScreenState extends State<ClassicSessionScreen> with Single
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _quit();
       },
-      child: _breathing ? _buildBreathing() : _buildShooting(),
+      child: _briefing ? _buildBriefing() : _buildShooting(),
     );
   }
 
   // ─────────────────────── 03_Classique_Consignes ───────────────────────
 
-  Widget _buildBreathing() {
-    final c = widget.config;
-    final t = _now.inMicroseconds / 1e6;
-    final remaining = c.countdownSeconds - t.floor();
-    final ready = remaining <= 0;
-    // Le cercle gonfle à l'inspiration et dégonfle à l'expiration, sur le cycle de respiration.
-    final breath = 0.5 - 0.5 * math.cos(2 * math.pi * t / (c.breathCycle.inMicroseconds / 1e6));
-    final inhaling = math.sin(2 * math.pi * t / (c.breathCycle.inMicroseconds / 1e6)) >= 0;
-
+  Widget _buildBriefing() {
+    final size = MediaQuery.sizeOf(context);
+    final pad = MediaQuery.paddingOf(context);
     return Scaffold(
-      backgroundColor: AlpColors.cream,
-      body: SafeArea(
-        child: Column(
-          children: [
-            ShootingHeader(
-              badge: null,
-              chrono: formatChrono(c.timeLimit),
-              onClose: _quit,
-              translucent: false,
+      backgroundColor: Colors.white,
+      body: Stack(
+        children: [
+          Positioned(left: 0, right: 0, top: size.height * 0.186, height: size.height * 0.2635, child: const MountainBackdrop()),
+          Positioned.fill(
+            child: Column(
+              children: [
+                SizedBox(height: pad.top + 16),
+                RangeHeader(subtitle: 'Mode classique', onClose: _quit, light: false, back: true),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(top: 21),
+                    child: Column(
+                      children: [
+                        const Reticle(size: 140),
+                        const SizedBox(height: 24),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text(
+                            'Contrôle ta respiration',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, height: 32 / 28),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text(
+                            "Le viseur suit une respiration simulée.\nTire en fin d'expiration, quand il se stabilise.",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              height: 20 / 12,
+                              color: Color(0x99000000),
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _BriefingStep(image: PdtAssets.iconPhone, text: 'Tiens ton téléphone à deux mains'),
+                              const SizedBox(height: 8),
+                              _BriefingStep(
+                                image: PdtAssets.iconTarget,
+                                text: 'Appuie sur Tirer quand le viseur est sur la cible',
+                              ),
+                              const SizedBox(height: 8),
+                              _BriefingStep(
+                                image: PdtAssets.iconWind,
+                                text: "Suis la jauge de respiration et tire dans la zone bleue, en fin d'expiration",
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                BottomActionSheet(
+                  child: SheetButton(label: 'Je suis prêt', onPressed: _startShooting),
+                ),
+              ],
             ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Column(children: [
-                  const SizedBox(height: 40),
-                  SizedBox(
-                    width: 200,
-                    height: 200,
-                    child: Stack(alignment: Alignment.center, children: [
-                      Container(
-                        width: 150 + 50 * breath,
-                        height: 150 + 50 * breath,
-                        decoration: const BoxDecoration(color: Color(0xFFDDEDEE), shape: BoxShape.circle),
-                      ),
-                      Container(
-                        width: 120 + 30 * breath,
-                        height: 120 + 30 * breath,
-                        decoration: const BoxDecoration(color: Color(0xFFB4E4F0), shape: BoxShape.circle),
-                      ),
-                      Container(
-                        width: 104,
-                        height: 104,
-                        decoration: const BoxDecoration(color: AlpColors.petrol, shape: BoxShape.circle),
-                        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                          Text(ready ? 'Go' : '$remaining',
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 40, fontWeight: FontWeight.w800, height: 1.1)),
-                          Text(inhaling ? 'Inspire' : 'Expire',
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 12)),
-                        ]),
-                      ),
-                    ]),
-                  ),
-                  const SizedBox(height: 32),
-                  const Text('Reprends ton souffle', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 8),
-                  const Text(
-                    "Le viseur bouge au rythme d'une respiration simulée. Tire en fin d'expiration, quand il se stabilise.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AlpColors.textSecondary, fontSize: 15, height: 1.4),
-                  ),
-                  const SizedBox(height: 22),
-                  const _InstructionCard(
-                    icon: Icon(Icons.smartphone_outlined, color: AlpColors.petrol),
-                    text: TextSpan(text: 'Tiens ton téléphone à deux mains'),
-                  ),
-                  const _InstructionCard(
-                    icon: TargetGlyph(size: 22),
-                    text: TextSpan(children: [
-                      TextSpan(text: 'Appuie sur '),
-                      TextSpan(text: 'Tirer', style: TextStyle(fontWeight: FontWeight.w800)),
-                      TextSpan(text: ' quand le viseur est sur la cible'),
-                    ]),
-                  ),
-                  const _InstructionCard(
-                    icon: Icon(Icons.air, color: AlpColors.petrol),
-                    text: TextSpan(children: [
-                      TextSpan(text: 'Suis la jauge '),
-                      TextSpan(text: 'Respiration', style: TextStyle(fontWeight: FontWeight.w800)),
-                      TextSpan(text: " et tire dans la zone bleue, en fin d'expiration"),
-                    ]),
-                  ),
-                ]),
-              ),
-            ),
-            Container(
-              color: Colors.white,
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-              child: AlpPrimaryButton(
-                label: 'Je suis prêt',
-                onPressed: ready
-                    ? () => setState(() {
-                          _breathing = false;
-                          _breathStart = _now;
-                        })
-                    : null,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -200,149 +169,101 @@ class _ClassicSessionScreenState extends State<ClassicSessionScreen> with Single
   Widget _buildShooting() {
     final s = _session;
     final c = widget.config;
-    final topPadding = MediaQuery.paddingOf(context).top;
-    final geom = PlateGeometry(MediaQuery.sizeOf(context).width - 80, targetCount: c.targetCount);
+    final size = MediaQuery.sizeOf(context);
+    final pad = MediaQuery.paddingOf(context);
+    final geom = PlateGeometry(size.width - 34, targetCount: c.targetCount);
+    // Cibles centrées à 50 % - 29 px, comme sur la maquette.
+    final plateOrigin = Offset(17, size.height / 2 - 29 - geom.height / 2);
+    final targetsTop = plateOrigin.dy + geom.targetCenter(0).dy - geom.targetRadius;
     // La visée et le test de touche se font dans le repère de la plaque.
     final target = geom.targetCenter(s.aimedTarget);
     final reticle = s.showingFeedback ? s.lastShotReticle! : target + s.sway;
-    final reticleSize = geom.targetRadius * 4.6;
-    final reticleColor = s.showingFeedback ? Colors.white : AlpColors.orange;
-    final horizon = topPadding + 140;
-    final plateOrigin = Offset(40, horizon + 4);
+    final reticleSize = geom.reticleSize;
+    final hitFeedback = s.showingFeedback && (s.lastOutcome?.isHit ?? false);
+    final dockBottom = pad.bottom + 28;
 
     void fire() => s.fire(
-          reticle: geom.targetCenter(s.activeTarget) + s.sway,
-          target: geom.targetCenter(s.activeTarget),
-          targetRadius: geom.targetRadius,
-        );
+      reticle: geom.targetCenter(s.activeTarget) + s.sway,
+      target: geom.targetCenter(s.activeTarget),
+      targetRadius: geom.targetRadius,
+    );
 
     return Scaffold(
       backgroundColor: Colors.white,
-      body: Column(
+      body: Stack(
+        clipBehavior: Clip.hardEdge,
         children: [
-          Expanded(
-            child: Stack(
-              clipBehavior: Clip.hardEdge,
-              children: [
-                Positioned.fill(child: CustomPaint(painter: MountainScenePainter(horizon: horizon))),
-                Positioned(
-                  left: plateOrigin.dx,
-                  top: plateOrigin.dy,
-                  child: TargetPlate(geometry: geom, shots: s.shots),
-                ),
-                Positioned(
-                  left: plateOrigin.dx + reticle.dx - reticleSize / 2,
-                  top: plateOrigin.dy + reticle.dy - reticleSize / 2,
-                  child: Reticle(color: reticleColor, size: reticleSize),
-                ),
-                if (s.showingFeedback && s.lastOutcome != null)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    top: plateOrigin.dy + geom.height + 14,
-                    child: Center(child: ShotToast(outcome: s.lastOutcome!, drops: c.dropsPerTarget)),
-                  ),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  top: topPadding,
-                  child: ShootingHeader(
-                    badge: 'Coup ${math.min(s.shots.length + 1, c.targetCount)}/${c.targetCount}',
-                    chrono: formatChrono(s.elapsed),
-                    onClose: _quit,
-                  ),
-                ),
-              ],
+          Positioned(
+            left: 0,
+            right: 0,
+            top: size.height * 0.2998,
+            height: size.height * 0.2867,
+            child: const MountainBackdrop(),
+          ),
+          Positioned(
+            left: plateOrigin.dx,
+            top: plateOrigin.dy,
+            child: TargetPlate(
+              geometry: geom,
+              shots: s.shots,
+              impactOn: hitFeedback ? s.shots.length - 1 : null,
             ),
           ),
-          _ClassicBottomSheet(session: s, onFire: fire),
+          Positioned(
+            left: plateOrigin.dx + reticle.dx - reticleSize / 2,
+            top: plateOrigin.dy + reticle.dy - reticleSize / 2,
+            child: Reticle(size: reticleSize, pulse: hitFeedback ? s.feedbackProgress : null),
+          ),
+          if (s.showingFeedback && s.lastOutcome != null)
+            Positioned(
+              left: 0,
+              right: 0,
+              top: targetsTop - 69,
+              child: Center(child: ShotToast(outcome: s.lastOutcome!, drops: c.dropsPerTarget)),
+            ),
+          Positioned(
+            left: 0,
+            right: 0,
+            top: pad.top + 16,
+            child: RangeHeader(
+              subtitle: 'Mode classique',
+              chrono: formatChrono(s.elapsed),
+              onClose: _quit,
+              light: false,
+            ),
+          ),
+          Positioned(left: 16, right: 16, top: pad.top + 90, child: RangeStatsBar(session: s, onScenery: false)),
+          Positioned(left: 16, right: 16, top: pad.top + 148, child: MagazineAndHits(session: s)),
+          // Jauge de respiration, juste au-dessus du bouton Tirer.
+          Positioned(
+            left: size.width * 55 / 390,
+            right: size.width * 54 / 390,
+            bottom: dockBottom + 112 + 21,
+            child: BreathMeter(cursor: s.cursor, config: c),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: dockBottom,
+            child: ShootDock(onFire: s.canFire ? fire : null),
+          ),
         ],
       ),
     );
   }
 }
 
-class _ClassicBottomSheet extends StatelessWidget {
-  const _ClassicBottomSheet({required this.session, required this.onFire});
-  final ShootingSession session;
-  final VoidCallback onFire;
+/// Consigne illustrée (icône 3D) de l'écran « Contrôle ta respiration ».
+class _BriefingStep extends StatelessWidget {
+  const _BriefingStep({required this.image, required this.text});
+  final String image;
+  final String text;
 
   @override
   Widget build(BuildContext context) {
-    final s = session;
-    final c = s.config;
-    return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        boxShadow: [BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, -2))],
-      ),
-      padding: EdgeInsets.fromLTRB(20, 20, 20, 16 + MediaQuery.paddingOf(context).bottom),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Chargeur', style: TextStyle(color: AlpColors.textSecondary, fontSize: 14)),
-                const SizedBox(height: 6),
-                Magazine(total: c.targetCount, fired: s.shots.length),
-              ]),
-              const Spacer(),
-              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                const Text('Cibles touchées', style: TextStyle(color: AlpColors.textSecondary, fontSize: 14)),
-                Text.rich(TextSpan(children: [
-                  TextSpan(text: '${s.hits}', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
-                  TextSpan(
-                      text: '  /${c.targetCount}',
-                      style: const TextStyle(fontSize: 16, color: AlpColors.textSecondary)),
-                ])),
-              ]),
-            ],
-          ),
-          const SizedBox(height: 18),
-          BreathGauge(cursor: s.cursor, config: c),
-          const SizedBox(height: 18),
-          Row(children: [
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  const DropBadge(size: 18),
-                  const SizedBox(width: 8),
-                  Text('+${s.drops} gouttes', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-                ]),
-                const SizedBox(height: 4),
-                const Text('Expire lentement puis tire entre deux respirations',
-                    style: TextStyle(color: AlpColors.textSecondary, fontSize: 14)),
-              ]),
-            ),
-            const SizedBox(width: 8),
-            ShootButton(onPressed: s.canFire ? onFire : null),
-          ]),
-        ],
-      ),
-    );
-  }
-}
-
-class _InstructionCard extends StatelessWidget {
-  const _InstructionCard({required this.icon, required this.text});
-  final Widget icon;
-  final InlineSpan text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AlpRadii.card)),
-      child: Row(children: [
-        SizedBox(width: 28, child: Center(child: icon)),
-        const SizedBox(width: 12),
-        Expanded(child: Text.rich(text, style: const TextStyle(fontSize: 15))),
-      ]),
+    return RangeStepCard(
+      leading: SizedBox.square(dimension: 36, child: Image.asset(image, fit: BoxFit.contain)),
+      text: text,
     );
   }
 }

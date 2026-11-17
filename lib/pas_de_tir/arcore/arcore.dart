@@ -21,10 +21,7 @@ abstract final class ArCore {
 
   static Future<void> setMode(ArMode mode) => _methods.invokeMethod('setMode', {'mode': mode.name});
 
-  /// Point écran (pixels physiques) visé pour poser la plaque ; null = centre.
-  static Future<void> setPlacementPoint(Offset? physical) =>
-      _methods.invokeMethod('setPlacementPoint', {'x': physical?.dx ?? -1.0, 'y': physical?.dy ?? -1.0});
-
+  /// Ancre la plaque là où elle est prévisualisée (distance fixe, droit devant).
   static Future<void> confirmPlacement() => _methods.invokeMethod('confirmPlacement');
 
   /// Capture de l'image caméra courante ; renvoie le chemin du JPEG.

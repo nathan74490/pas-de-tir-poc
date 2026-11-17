@@ -57,12 +57,6 @@ object ArCoreBridge {
                     activeView?.setMode(call.argument<String>("mode") ?: ArCoreView.MODE_SCANNING)
                     result.success(null)
                 }
-                "setPlacementPoint" -> {
-                    val x = call.argument<Double>("x") ?: -1.0
-                    val y = call.argument<Double>("y") ?: -1.0
-                    activeView?.setPlacementPoint(x.toFloat(), y.toFloat())
-                    result.success(null)
-                }
                 "confirmPlacement" -> {
                     activeView?.confirmPlacement()
                     result.success(null)

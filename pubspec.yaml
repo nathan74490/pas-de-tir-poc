@@ -35,6 +35,8 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.5.6
+  flutter_svg: ^2.4.0
+  camera: ^0.12.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -59,6 +61,19 @@ flutter:
 
   assets:
     - assets/images/gyro_range.jpg
+    - assets/images/pas_de_tir/
+
+  # Police de la maquette Figma (Figtree, licence OFL).
+  fonts:
+    - family: Figtree
+      fonts:
+        - asset: assets/fonts/Figtree-Regular.ttf
+        - asset: assets/fonts/Figtree-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Figtree-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Figtree-Bold.ttf
+          weight: 700
 
   # To add assets to your application, add an assets section, like this:
   # assets:

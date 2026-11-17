@@ -27,6 +27,15 @@ Future<bool> isArSupported() async {
   return false;
 }
 
+/// Permission caméra seule (mode Gyroscope + caméra, sans ARCore).
+Future<bool> requestCameraPermission() async {
+  try {
+    return await ArCore.requestCameraPermission();
+  } catch (_) {
+    return false;
+  }
+}
+
 /// Permission caméra puis installation d'ARCore si nécessaire.
 /// Faux → repli silencieux sur le mode Classique.
 Future<bool> prepareAr() async {

@@ -4,6 +4,7 @@ import 'pas_de_tir_logic.dart';
 enum PasDeTirMode {
   ar('ar', 'AR', 'Réalité augmentée'),
   gyro('gyro', 'Gyro', 'Gyroscope'),
+  gyroCamera('gyro_camera', 'Gyro cam', 'Gyroscope + caméra'),
   classic('classic', 'Classique', 'Classique');
 
   const PasDeTirMode(this.apiValue, this.shortLabel, this.longLabel);

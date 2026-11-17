@@ -39,8 +39,21 @@ Future<PasDeTirResult?> runPasDeTir(BuildContext context, {bool replay = false, 
     if (!context.mounted) return null;
   }
 
+  // Gyroscope + caméra : même modale, puis permission caméra (sans ARCore).
+  var useGyroCamera = mode == PasDeTirMode.gyroCamera;
+  if (useGyroCamera) {
+    final choice = demoMode != null
+        ? CameraChoice.allow
+        : await showCameraPermissionModal(context, forAr: false);
+    if (choice == null || !context.mounted) return null;
+    useGyroCamera = choice == CameraChoice.allow && await requestCameraPermission();
+    if (!context.mounted) return null;
+  }
+
   final Widget? sensorScreen = useAr
       ? const ArSessionScreen()
+      : useGyroCamera
+      ? const GyroSessionScreen(useCamera: true)
       : mode == PasDeTirMode.gyro
       ? const GyroSessionScreen()
       : null;

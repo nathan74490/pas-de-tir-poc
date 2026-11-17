@@ -14,7 +14,6 @@ class PasDeTirConfig {
     this.minSway = 0,
     this.swayFrequencyX = 0.26,
     this.swayFrequencyY = 0.4,
-    this.countdownSeconds = 3,
     this.breathing = true,
   });
 
@@ -45,9 +44,6 @@ class PasDeTirConfig {
   /// Fréquences (Hz) de l'oscillation du réticule : plus bas = plus lent.
   final double swayFrequencyX;
   final double swayFrequencyY;
-
-  /// Compte à rebours de l'écran « Reprends ton souffle ».
-  final int countdownSeconds;
 
   /// Respiration simulée : jauge affichée et tir valide seulement dans la
   /// zone de tir. Sans elle, seule la visée compte.

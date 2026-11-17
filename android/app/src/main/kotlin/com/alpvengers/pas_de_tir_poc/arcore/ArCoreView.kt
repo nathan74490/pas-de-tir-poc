@@ -12,7 +12,6 @@ import android.util.Log
 import android.view.View
 import com.google.ar.core.Anchor
 import com.google.ar.core.Config
-import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.Session
@@ -54,8 +53,6 @@ class ArCoreView(private val activity: Activity) : PlatformView, GLSurfaceView.R
 
     // Commandes venant de Flutter (thread principal), lues par le thread GL.
     @Volatile private var mode = MODE_SCANNING
-    @Volatile private var placementX = -1f
-    @Volatile private var placementY = -1f
     @Volatile private var confirmRequested = false
     @Volatile private var pendingCapture: MethodChannel.Result? = null
 
@@ -69,7 +66,6 @@ class ArCoreView(private val activity: Activity) : PlatformView, GLSurfaceView.R
     private val viewProj = FloatArray(16)
     private val tmpIn = FloatArray(4)
     private val tmpOut = FloatArray(4)
-    private val invViewProj = FloatArray(16)
     private var placementSource = "none"
 
     /** Un seul envoi vers Flutter en attente à la fois (évite de saturer le thread principal). */
@@ -127,16 +123,8 @@ class ArCoreView(private val activity: Activity) : PlatformView, GLSurfaceView.R
     }
 
     fun setMode(newMode: String) {
-        if (newMode == MODE_PLACING) {
-            placementX = -1f
-            placementY = -1f
-        }
+        if (newMode == MODE_PLACING) forward = null
         mode = newMode
-    }
-
-    fun setPlacementPoint(x: Float, y: Float) {
-        placementX = x
-        placementY = y
     }
 
     fun confirmPlacement() {
@@ -205,8 +193,7 @@ class ArCoreView(private val activity: Activity) : PlatformView, GLSurfaceView.R
 
                 if (mode != MODE_ANCHORED) data["points"] = projectedPointCloud(frame)
 
-                val camPos = camera.pose.translation
-                if (mode == MODE_PLACING) updatePlacement(frame.hitTest(placementXOr(), placementYOr()), camPos, s)
+                if (mode == MODE_PLACING) updatePlacement(camera.pose, s)
 
                 val ground = if (mode == MODE_ANCHORED) anchor?.pose?.translation else previewGround
                 val fwd = forward
@@ -244,75 +231,56 @@ class ArCoreView(private val activity: Activity) : PlatformView, GLSurfaceView.R
         Log.i(TAG, message)
     }
 
-    private fun placementXOr() = if (placementX < 0) viewWidth / 2f else placementX
-    private fun placementYOr() = if (placementY < 0) viewHeight * 0.62f else placementY
-
     /**
-     * Position de la plaque au sol sous le point visé : hit-test ARCore dans le
-     * contour d'un plan, sinon intersection du rayon de visée avec le plan
-     * horizontal détecté le plus grand (contours ARCore souvent incomplets).
+     * Plaque à distance fixe ([PLATE_DISTANCE]), la même pour tous les joueurs,
+     * droit devant dans la direction horizontale où regarde le téléphone, au
+     * niveau du sol détecté. L'utilisateur choisit seulement la direction et valide.
      */
-    private fun updatePlacement(hits: List<HitResult>, camPos: FloatArray, s: Session) {
-        val hit = hits.firstOrNull {
-            val t = it.trackable
-            t is Plane && t.type == Plane.Type.HORIZONTAL_UPWARD_FACING && t.isPoseInPolygon(it.hitPose)
+    private fun updatePlacement(cameraPose: Pose, s: Session) {
+        val camPos = cameraPose.translation
+        // La caméra regarde vers -Z ; on garde la composante horizontale.
+        val z = cameraPose.zAxis
+        var fx = -z[0]
+        var fz = -z[2]
+        val len = sqrt(fx * fx + fz * fz)
+        if (len < MIN_HORIZONTAL_LOOK) {
+            placementSource = "look-vertical" // Téléphone pointé vers le sol ou le ciel.
+            return
         }
-        val ground: FloatArray
-        var plane: Plane? = null
-        if (hit != null) {
-            ground = hit.hitPose.translation
-            placementSource = "hit"
-        } else {
-            plane = s.getAllTrackables(Plane::class.java)
-                .filter {
-                    it.trackingState == TrackingState.TRACKING && it.subsumedBy == null &&
-                        it.type == Plane.Type.HORIZONTAL_UPWARD_FACING
-                }
-                .maxByOrNull { it.extentX * it.extentZ }
-            ground = plane?.let { rayOnPlane(placementXOr(), placementYOr(), it.centerPose.ty(), camPos) } ?: run {
-                placementSource = if (plane == null) "no-plane" else "ray-miss"
-                return
+        fx /= len
+        fz /= len
+        // Lissage : la plaque suit le regard sans trembler avec la main.
+        forward?.let { prev ->
+            // forward = sol → caméra, soit l'opposé du regard.
+            val sx = -prev[0] * (1 - SMOOTHING) + fx * SMOOTHING
+            val sz = -prev[2] * (1 - SMOOTHING) + fz * SMOOTHING
+            val sl = sqrt(sx * sx + sz * sz)
+            if (sl > 1e-3f) {
+                fx = sx / sl
+                fz = sz / sl
             }
-            placementSource = "ray"
         }
 
-        // La plaque fait face à l'utilisateur : axe horizontal sol → caméra.
-        val fx = camPos[0] - ground[0]
-        val fz = camPos[2] - ground[2]
-        val len = sqrt(fx * fx + fz * fz)
-        if (len < 1e-3f) return
+        val plane = s.getAllTrackables(Plane::class.java)
+            .filter {
+                it.trackingState == TrackingState.TRACKING && it.subsumedBy == null &&
+                    it.type == Plane.Type.HORIZONTAL_UPWARD_FACING
+            }
+            .maxByOrNull { it.extentX * it.extentZ }
+        val groundY = plane?.centerPose?.ty() ?: (camPos[1] - DEFAULT_EYE_HEIGHT)
+        placementSource = if (plane != null) "fixed" else "fixed-no-plane"
+
+        val ground = floatArrayOf(camPos[0] + fx * PLATE_DISTANCE, groundY, camPos[2] + fz * PLATE_DISTANCE)
         previewGround = ground
-        forward = floatArrayOf(fx / len, 0f, fz / len)
+        // La plaque fait face à l'utilisateur : axe horizontal sol → caméra.
+        forward = floatArrayOf(-fx, 0f, -fz)
 
         if (confirmRequested) {
             confirmRequested = false
             anchor?.detach()
-            anchor = hit?.createAnchor() ?: plane!!.createAnchor(Pose.makeTranslation(ground[0], ground[1], ground[2]))
+            anchor = s.createAnchor(Pose.makeTranslation(ground[0], ground[1], ground[2]))
             mode = MODE_ANCHORED
         }
-    }
-
-    /** Intersection du rayon caméra passant par le point écran (x, y) avec le plan y = [planeY]. */
-    private fun rayOnPlane(x: Float, y: Float, planeY: Float, camPos: FloatArray): FloatArray? {
-        if (!Matrix.invertM(invViewProj, 0, viewProj, 0)) return null
-        val nx = 2f * x / viewWidth - 1f
-        val ny = 1f - 2f * y / viewHeight
-        fun unproject(z: Float): FloatArray {
-            tmpIn[0] = nx; tmpIn[1] = ny; tmpIn[2] = z; tmpIn[3] = 1f
-            Matrix.multiplyMV(tmpOut, 0, invViewProj, 0, tmpIn, 0)
-            return floatArrayOf(tmpOut[0] / tmpOut[3], tmpOut[1] / tmpOut[3], tmpOut[2] / tmpOut[3])
-        }
-        val near = unproject(-1f)
-        val far = unproject(1f)
-        val dx = far[0] - near[0]
-        val dy = far[1] - near[1]
-        val dz = far[2] - near[2]
-        if (dy > -1e-4f) return null // On ne vise pas vers le sol.
-        val t = (planeY - near[1]) / dy
-        if (t <= 0f) return null
-        val p = floatArrayOf(near[0] + dx * t, planeY, near[2] + dz * t)
-        val distance = sqrt((p[0] - camPos[0]).let { it * it } + (p[2] - camPos[2]).let { it * it })
-        return if (distance <= MAX_PLACEMENT_DISTANCE) p else null
     }
 
     /** Coins de la plaque (HG, HD, BD, BG) et pieds (G, D), en pixels écran. */
@@ -321,7 +289,8 @@ class ArCoreView(private val activity: Activity) : PlatformView, GLSurfaceView.R
         val rx = f[2]
         val rz = -f[0]
         val w = PLATE_WIDTH
-        val h = PLATE_WIDTH * 0.286f
+        // Même ratio que la rangée de cibles dessinée côté Flutter (PlateGeometry : 84/356).
+        val h = PLATE_WIDTH * 84f / 356f
         val cy = ground[1] + LEG_HEIGHT + h / 2
         fun point(dx: Float, y: Float) = floatArrayOf(ground[0] + rx * dx, y, ground[2] + rz * dx)
 
@@ -399,7 +368,21 @@ class ArCoreView(private val activity: Activity) : PlatformView, GLSurfaceView.R
         const val MODE_PLACING = "placing"
         const val MODE_ANCHORED = "anchored"
         private const val MAX_POINTS = 120
-        private const val MAX_PLACEMENT_DISTANCE = 12f
+
+        /**
+         * Distance de la plaque (m), identique pour tous : à 5 m, la rangée de
+         * 2,6 m occupe à peu près la largeur de la maquette (356 px sur 390).
+         */
+        private const val PLATE_DISTANCE = 5f
+
+        /** Hauteur des yeux supposée si aucun plan n'est détecté (m). */
+        private const val DEFAULT_EYE_HEIGHT = 1.4f
+
+        /** En dessous, le téléphone vise trop à la verticale pour donner une direction. */
+        private const val MIN_HORIZONTAL_LOOK = 0.2f
+
+        /** Part du nouveau regard prise à chaque image (lissage de la direction). */
+        private const val SMOOTHING = 0.15f
 
         /** Plaque virtuelle : 2,6 m de large, posée sur des pieds de 80 cm. */
         private const val PLATE_WIDTH = 2.6f

@@ -1,12 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
-import '../../theme/alp_tokens.dart';
-import '../../widgets/alp_common.dart';
 import '../gyro/gyro.dart';
 import '../pas_de_tir_config.dart';
 import '../pas_de_tir_result.dart';
@@ -18,20 +17,32 @@ import 'pas_de_tir_modals.dart';
 /// carabine. Sa rotation (gyroscope) fait défiler un décor panoramique où se
 /// trouve la plaque ; le réticule reste fixe au centre et ne suit que le téléphone.
 ///
+/// Avec [useCamera], le décor est l'image de la caméra arrière : la plaque est
+/// ancrée par le gyroscope dans la direction visée au calibrage et se déplace à
+/// l'écran comme un objet réel (sans ARCore, donc sans détection du sol).
+///
 /// Calibrage (la plaque se place dans la direction visée, à l'horizon) → tir → résultat.
 class GyroSessionScreen extends StatefulWidget {
-  const GyroSessionScreen({super.key, this.config = PasDeTirConfig.gyro});
+  const GyroSessionScreen({super.key, this.config = PasDeTirConfig.gyro, this.useCamera = false});
 
   final PasDeTirConfig config;
+  final bool useCamera;
 
   @override
   State<GyroSessionScreen> createState() => _GyroSessionScreenState();
 }
 
-class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTickerProviderStateMixin {
+class _GyroSessionScreenState extends State<GyroSessionScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   /// Sensibilité : déplacement du décor (px logiques) par radian de rotation.
   /// À 800, passer d'une cible à la suivante demande environ 3°.
   static const _pixelsPerRadian = 800.0;
+
+  /// Champ de vision de la caméra arrière sur son grand côté (vertical en
+  /// portrait). Sert à faire bouger la plaque à la même vitesse que l'image
+  /// caméra. ~68° pour un capteur principal 26 mm équivalent (Galaxy A54) ;
+  /// à ajuster si la plaque « glisse » par rapport au décor réel.
+  static const _cameraLongSideFov = 68 * math.pi / 180;
 
   /// Sans données capteur passé ce délai, on bascule en Classique.
   static const _sensorTimeout = Duration(seconds: 2);
@@ -44,9 +55,10 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
   /// banderoles au bout du pas de tir. La plaque y est posée.
   static const _backdropHorizon = Offset(0.533, 0.50);
 
-  /// Largeur de la plaque, en fraction de la largeur d'écran : plus petit =
-  /// cible plus lointaine (et plus dure à toucher).
-  static const _plateWidthFraction = 0.40;
+  /// Largeur de la rangée de cibles, en fraction de la largeur d'écran
+  /// (maquette : 356 px sur 390). Plus petit = cibles plus lointaines (et plus
+  /// dures à toucher).
+  static const _plateWidthFraction = 356 / 390;
 
   /// Au-delà de cette inclinaison vers le sol (rad, ~35°), on demande de lever
   /// le téléphone avant de pouvoir calibrer.
@@ -62,10 +74,18 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
   Duration _shootStart = Duration.zero;
   bool _finishing = false;
 
+  /// Caméra arrière (mode [GyroSessionScreen.useCamera]).
+  CameraController? _camera;
+  bool _cameraStarting = false;
+
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    if (widget.useCamera) {
+      WidgetsBinding.instance.addObserver(this);
+      _startCamera();
+    }
     _rotations = Gyro.rotations().listen(
       (m) {
         _rotation = m;
@@ -73,6 +93,47 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
       },
       onError: (Object _) => _fallback(),
     );
+  }
+
+  Future<void> _startCamera() async {
+    if (_cameraStarting || _camera != null) return;
+    _cameraStarting = true;
+    try {
+      final cameras = await availableCameras();
+      final back = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      final controller = CameraController(back, ResolutionPreset.high, enableAudio: false);
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() => _camera = controller);
+    } catch (_) {
+      // Caméra refusée ou indisponible : repli en Classique, comme pour le gyroscope.
+      _fallback();
+    } finally {
+      _cameraStarting = false;
+    }
+  }
+
+  Future<void> _stopCamera() async {
+    final controller = _camera;
+    if (controller == null) return;
+    setState(() => _camera = null);
+    await controller.dispose();
+  }
+
+  /// La caméra est libérée en arrière-plan et relancée au retour.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      _stopCamera();
+    } else if (state == AppLifecycleState.resumed && !_finishing) {
+      _startCamera();
+    }
   }
 
   void _onTick(Duration t) {
@@ -105,6 +166,16 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
     setState(() => _calibrated = true);
   }
 
+  /// Focale de l'aperçu caméra affiché en plein écran (px logiques par
+  /// unité de tangente). L'aperçu couvre l'écran : son grand côté (vertical en
+  /// portrait) peut dépasser la hauteur d'écran.
+  double _cameraFocal(Size screen, CameraController? camera) {
+    final preview = camera?.value.previewSize;
+    final ratio = preview == null ? 4 / 3 : preview.longestSide / preview.shortestSide;
+    final displayedLong = math.max(screen.height, screen.width * ratio);
+    return displayedLong / 2 / math.tan(_cameraLongSideFov / 2);
+  }
+
   /// Inclinaison du téléphone par rapport à l'horizontale (rad, < 0 = vers le sol).
   double get _tilt {
     final r = _rotation;
@@ -113,7 +184,10 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
 
   void _start() {
     setState(() {
-      _session = ShootingSession(mode: PasDeTirMode.gyro, config: widget.config);
+      _session = ShootingSession(
+        mode: widget.useCamera ? PasDeTirMode.gyroCamera : PasDeTirMode.gyro,
+        config: widget.config,
+      );
       _shootStart = _now;
     });
   }
@@ -143,11 +217,13 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    precacheImage(_backdrop, context);
+    if (!widget.useCamera) precacheImage(_backdrop, context);
   }
 
   @override
   void dispose() {
+    if (widget.useCamera) WidgetsBinding.instance.removeObserver(this);
+    _camera?.dispose();
     _ticker.dispose();
     _rotations.cancel();
     _session?.dispose();
@@ -162,11 +238,12 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
     final s = _session;
 
     // Monde : origine = point visé au calibrage, où est centrée la rangée de cibles.
-    // Plaque assez petite pour paraître au fond du pas de tir de la photo.
     final geom = PlateGeometry(size.width * _plateWidthFraction, targetCount: c.targetCount);
     final plateTopLeft = Offset(-geom.width / 2, -geom.targetCenter(0).dy);
-    final horizon = plateTopLeft.dy - 4;
-    final anchor = Offset(size.width / 2, size.height * 0.42);
+    // Cibles juste au-dessus de l'horizon de la photo (pied des banderoles), comme sur la maquette.
+    final horizon = plateTopLeft.dy + geom.height * 1.2;
+    // Viseur au milieu de l'écran, comme sur la maquette (cibles à 50 % - 29 px).
+    final anchor = Offset(size.width / 2, size.height / 2 - 29);
 
     // Photo à l'échelle : assez large pour ~4 écrans de balayage et assez
     // haute pour viser au-dessus et en dessous de l'horizon.
@@ -178,10 +255,22 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
       horizon - sceneSize.height * _backdropHorizon.dy,
     );
 
-    // Visée en px de monde, bornée pour que l'écran reste toujours dans la photo.
     final rotation = _rotation, reference = _reference;
     var aim = Offset.zero;
-    if (rotation != null && reference != null) {
+    final camera = _camera;
+    final cameraReady = camera != null && camera.value.isInitialized;
+    if (widget.useCamera) {
+      // Décor réel : la plaque doit tourner à la même vitesse que l'image
+      // caméra, soit la focale de l'aperçu affiché (en px logiques).
+      if (rotation != null && reference != null) {
+        final a = aimAngles(reference, rotation);
+        final focal = _cameraFocal(size, camera);
+        // Au-delà de ~80°, la plaque est de toute façon hors champ.
+        double project(double angle) => focal * math.tan(angle.clamp(-1.4, 1.4));
+        aim = Offset(project(a.dx), -project(a.dy));
+      }
+    } else if (rotation != null && reference != null) {
+      // Visée en px de monde, bornée pour que l'écran reste toujours dans la photo.
       final a = aimAngles(reference, rotation);
       final minX = sceneTopLeft.dx + anchor.dx;
       final maxX = sceneTopLeft.dx + sceneSize.width - (size.width - anchor.dx);
@@ -196,6 +285,7 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
     Offset toScreen(Offset world) => anchor + world - aim;
     final sceneOrigin = toScreen(sceneTopLeft);
     final plateOrigin = toScreen(plateTopLeft);
+    final hitFeedback = s != null && s.showingFeedback && (s.lastOutcome?.isHit ?? false);
 
     return PopScope(
       canPop: false,
@@ -203,42 +293,52 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
         if (!didPop) _quit();
       },
       child: Scaffold(
-        // Bleu du ciel de la photo, le temps qu'elle se charge.
-        backgroundColor: const Color(0xFF2F5FA8),
+        // Bleu du ciel de la photo le temps qu'elle se charge ; noir sous la caméra.
+        backgroundColor: widget.useCamera ? Colors.black : const Color(0xFF2F5FA8),
         body: Stack(
           clipBehavior: Clip.hardEdge,
           children: [
-            Positioned(
-              left: sceneOrigin.dx,
-              top: sceneOrigin.dy,
-              width: sceneSize.width,
-              height: sceneSize.height,
-              child: const RepaintBoundary(
-                child: Image(image: _backdrop, fit: BoxFit.fill, filterQuality: FilterQuality.medium),
+            if (widget.useCamera)
+              Positioned.fill(child: cameraReady ? _CameraBackdrop(camera) : const SizedBox())
+            else
+              Positioned(
+                left: sceneOrigin.dx,
+                top: sceneOrigin.dy,
+                width: sceneSize.width,
+                height: sceneSize.height,
+                child: const RepaintBoundary(
+                  child: Image(image: _backdrop, fit: BoxFit.fill, filterQuality: FilterQuality.medium),
+                ),
               ),
-            ),
             Positioned(
               left: plateOrigin.dx,
               top: plateOrigin.dy,
-              child: TargetPlate(geometry: geom, shots: s?.shots ?? const []),
+              child: TargetPlate(
+                geometry: geom,
+                shots: s?.shots ?? const [],
+                impactOn: hitFeedback ? s.shots.length - 1 : null,
+              ),
             ),
+            // Lisibilité du header : décor clair (neige) ou image caméra, comme en AR.
+            Positioned.fill(child: TopScrim(soft: !widget.useCamera)),
             if (s == null) ...[
               Positioned(
-                left: anchor.dx - geom.targetRadius * 2.3,
-                top: anchor.dy - geom.targetRadius * 2.3,
-                child: Reticle(color: AlpColors.orange, size: geom.targetRadius * 4.6),
+                left: anchor.dx - geom.reticleSize / 2,
+                top: anchor.dy - geom.reticleSize / 2,
+                child: Reticle(size: geom.reticleSize),
               ),
-              Positioned(left: 0, right: 0, bottom: 0, child: _calibrationSheet(pad)),
+              Positioned(left: 0, right: 0, bottom: 0, child: _calibrationPanel()),
             ] else
               ..._shootingOverlay(s, geom, anchor, plateOrigin, pad),
             Positioned(
               left: 0,
               right: 0,
-              top: pad.top,
-              child: ShootingHeader(
-                badge: s == null ? 'Gyroscope' : 'Coup ${math.min(s.shots.length + 1, c.targetCount)}/${c.targetCount}',
-                chrono: formatChrono(s == null ? c.timeLimit : s.elapsed),
+              top: pad.top + 16,
+              child: RangeHeader(
+                subtitle: widget.useCamera ? 'Gyroscope + caméra' : 'Mode gyroscope',
+                chrono: formatChrono(s?.elapsed ?? Duration.zero),
                 onClose: _quit,
+                back: s == null,
               ),
             ),
           ],
@@ -248,144 +348,128 @@ class _GyroSessionScreenState extends State<GyroSessionScreen> with SingleTicker
   }
 
   List<Widget> _shootingOverlay(
-      ShootingSession s, PlateGeometry geom, Offset anchor, Offset plateOrigin, EdgeInsets pad) {
+    ShootingSession s,
+    PlateGeometry geom,
+    Offset anchor,
+    Offset plateOrigin,
+    EdgeInsets pad,
+  ) {
     final c = s.config;
-    final reticleSize = geom.targetRadius * 4.6;
+    final reticleSize = geom.reticleSize;
     final hitFeedback = s.showingFeedback && (s.lastOutcome?.isHit ?? false);
-    // Réticule au centre de l'écran, avec un léger tremblement simulé.
+    // Viseur au centre de l'écran, avec un léger tremblement simulé.
     final reticle = hitFeedback ? anchor : anchor + s.sway;
+    final targetsTop = plateOrigin.dy + geom.targetCenter(0).dy - geom.targetRadius;
 
     void fire() => s.fire(
-          reticle: anchor + s.sway,
-          target: plateOrigin + geom.targetCenter(s.activeTarget),
-          // Légère tolérance : le réticule « recouvre » la cible.
-          targetRadius: geom.targetRadius * 1.3,
-        );
+      reticle: anchor + s.sway,
+      target: plateOrigin + geom.targetCenter(s.activeTarget),
+      // Légère tolérance : le viseur « recouvre » la cible.
+      targetRadius: geom.targetRadius * 1.3,
+    );
 
     return [
       Positioned(
         left: reticle.dx - reticleSize / 2,
         top: reticle.dy - reticleSize / 2,
-        child: Reticle(
-          color: hitFeedback ? AlpColors.cyan : AlpColors.orange,
-          size: reticleSize,
-          pulse: hitFeedback ? s.feedbackProgress : null,
-        ),
+        child: Reticle(size: reticleSize, pulse: hitFeedback ? s.feedbackProgress : null),
       ),
       if (s.showingFeedback && s.lastOutcome != null)
         Positioned(
           left: 0,
           right: 0,
-          top: anchor.dy + reticleSize * 0.75,
+          top: targetsTop - 69,
           child: Center(child: ShotToast(outcome: s.lastOutcome!, drops: c.dropsPerTarget)),
         ),
-      ...floatingShootingHud(s, pad, onFire: fire),
-      // Recentrer : corrige la dérive lente du gyroscope.
+      Positioned(left: 16, right: 16, top: pad.top + 82, child: RangeStatsBar(session: s)),
+      Positioned(left: 16, right: 16, top: pad.top + 148, child: MagazineAndHits(session: s)),
       Positioned(
         left: 0,
         right: 0,
-        top: pad.top + 84,
-        child: Center(
-          child: Material(
-            color: const Color(0x80404A50),
-            borderRadius: BorderRadius.circular(20),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(20),
-              onTap: _recenter,
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.center_focus_strong_outlined, color: Colors.white, size: 18),
-                  SizedBox(width: 6),
-                  Text('Recentrer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                ]),
-              ),
-            ),
-          ),
+        bottom: pad.bottom + 28,
+        child: ShootDock(
+          onFire: s.canFire ? fire : null,
+          // Recentrer : corrige la dérive lente du gyroscope.
+          trailing: RecenterButton(onPressed: _recenter),
         ),
       ),
     ];
   }
 
-  Widget _calibrationSheet(EdgeInsets pad) {
+  Widget _calibrationPanel() {
     final tooLow = _tilt < -_maxCalibrationTilt;
-    return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      padding: EdgeInsets.fromLTRB(20, 20, 20, 16 + pad.bottom),
-      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        const Row(children: [
-          GameIconBadge(size: 44, child: Icon(Icons.screen_rotation_alt_rounded, color: AlpColors.petrol)),
-          SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Ton téléphone est ta carabine', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
-              Text('Tourne-toi et incline-le pour viser',
-                  style: TextStyle(color: AlpColors.textSecondary, fontSize: 14)),
-            ]),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const RangeStepCard(
+                leading: StepNumber(1),
+                text: 'Ton téléphone est ta carabine : tourne-toi et incline-le pour viser',
+                done: true,
+              ),
+              const SizedBox(height: 8),
+              RangeStepCard(
+                leading: const StepNumber(2),
+                text: tooLow
+                    ? 'Lève ton téléphone : tiens-le droit devant toi, à hauteur des yeux'
+                    : 'Tiens ton téléphone droit devant toi',
+                done: _rotation != null && !tooLow,
+              ),
+              const SizedBox(height: 8),
+              RangeStepCard(
+                leading: const StepNumber(3),
+                text: _calibrated
+                    ? 'Téléphone calibré : la plaque est devant toi'
+                    : 'Appuie sur « Calibrer » pour placer la plaque devant toi',
+                done: _calibrated,
+              ),
+            ],
           ),
-        ]),
-        const SizedBox(height: 14),
-        _CalibrationStep(
-          number: 1,
-          done: !tooLow,
-          text: tooLow
-              ? 'Lève ton téléphone : tiens-le à deux mains, droit devant toi, à hauteur des yeux'
-              : 'Téléphone tenu droit devant toi',
         ),
-        const SizedBox(height: 8),
-        _CalibrationStep(
-          number: 2,
-          done: _calibrated,
-          text: _calibrated
-              ? 'Téléphone calibré : la plaque est devant toi'
-              : 'Appuie sur « Calibrer » pour placer la plaque devant toi',
+        BottomActionSheet(
+          child: Row(
+            children: [
+              Expanded(
+                child: SheetButton(
+                  label: _calibrated ? 'Recalibrer' : 'Calibrer',
+                  primary: false,
+                  onPressed: _rotation == null || tooLow ? null : _calibrate,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: SheetButton(label: 'Je suis prêt', onPressed: _calibrated ? _start : null),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 16),
-        Row(children: [
-          Expanded(
-            child: AlpSecondaryButton(
-              label: _calibrated ? 'Recalibrer' : 'Calibrer',
-              onPressed: _rotation == null || tooLow ? null : _calibrate,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: AlpPrimaryButton(label: 'Je suis prêt', onPressed: _calibrated ? _start : null),
-          ),
-        ]),
-      ]),
+      ],
     );
   }
 }
 
-/// Étape du calibrage : pastille numérotée, cochée une fois l'étape validée.
-class _CalibrationStep extends StatelessWidget {
-  const _CalibrationStep({required this.number, required this.done, required this.text});
-  final int number;
-  final bool done;
-  final String text;
+/// Aperçu de la caméra arrière, recadré pour couvrir tout l'écran (portrait).
+class _CameraBackdrop extends StatelessWidget {
+  const _CameraBackdrop(this.camera);
+  final CameraController camera;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: AlpColors.cream, borderRadius: BorderRadius.circular(AlpRadii.button)),
-      child: Row(children: [
-        Container(
-          width: 26,
-          height: 26,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(shape: BoxShape.circle, color: done ? AlpColors.petrol : AlpColors.orange),
-          child: done
-              ? const Icon(Icons.check_rounded, color: Colors.white, size: 16)
-              : Text('$number', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+    final preview = camera.value.previewSize!;
+    return ClipRect(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: preview.shortestSide,
+          height: preview.longestSide,
+          child: CameraPreview(camera),
         ),
-        const SizedBox(width: 12),
-        Expanded(child: Text(text, style: const TextStyle(fontSize: 14.5))),
-      ]),
+      ),
     );
   }
 }
